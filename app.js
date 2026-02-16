@@ -1,4 +1,4 @@
-const STORAGE_KEY = "messagingTestStateV1";
+const STORAGE_KEY = "messagingTestStateV2";
 
 const defaultState = {
   users: ["Jared", "Nate"],
@@ -16,6 +16,7 @@ const userSelectScreen = document.getElementById("user-select-screen");
 const messagingScreen = document.getElementById("messaging-screen");
 const userList = document.getElementById("user-list");
 const addUserBtn = document.getElementById("add-user-btn");
+const addChannelBtn = document.getElementById("add-channel-btn");
 const switchUserBtn = document.getElementById("switch-user-btn");
 const channelsList = document.getElementById("channels-list");
 const dmList = document.getElementById("dm-list");
@@ -37,6 +38,8 @@ function init() {
 
 function attachEvents() {
   addUserBtn.addEventListener("click", addUser);
+  addChannelBtn.addEventListener("click", addChannel);
+
   switchUserBtn.addEventListener("click", () => {
     state.currentUser = null;
     saveState();
@@ -82,6 +85,7 @@ function render() {
     userSelectScreen.classList.remove("active");
     messagingScreen.classList.add("active");
     currentUserDisplay.textContent = `Messaging as ${state.currentUser}`;
+    ensureValidConversation();
     renderNav();
     renderMessages();
     renderTasks();
@@ -113,9 +117,7 @@ function renderNav() {
   dmList.innerHTML = "";
 
   state.channels.forEach((channel) => {
-    channelsList.appendChild(
-      createNavItem(`# ${channel}`, { type: "channel", id: channel })
-    );
+    channelsList.appendChild(createChannelNavItem(channel));
   });
 
   state.users
@@ -125,22 +127,44 @@ function renderNav() {
     });
 }
 
+function createChannelNavItem(channel) {
+  const item = createNavItem(`# ${channel}`, { type: "channel", id: channel });
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "channel-delete";
+  deleteBtn.title = `Delete ${channel}`;
+  deleteBtn.textContent = "🗑";
+  deleteBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteChannel(channel);
+  });
+
+  item.appendChild(deleteBtn);
+  return item;
+}
+
 function createNavItem(label, conversation) {
   const item = document.createElement("div");
   item.className = "nav-item";
+
+  const labelSpan = document.createElement("span");
+  labelSpan.textContent = label;
+  item.appendChild(labelSpan);
+
   if (
     state.activeConversation.type === conversation.type &&
     state.activeConversation.id === conversation.id
   ) {
     item.classList.add("active");
   }
-  item.textContent = label;
+
   item.addEventListener("click", () => {
     state.activeConversation = conversation;
     saveState();
     renderNav();
     renderMessages();
   });
+
   return item;
 }
 
@@ -155,6 +179,7 @@ function renderMessages() {
 
   if (!conversationMessages.length) {
     messagesEl.innerHTML = '<p class="empty">No messages yet.</p>';
+    scrollMessagesToBottom();
     return;
   }
 
@@ -194,6 +219,12 @@ function renderMessages() {
     wrapper.dataset.messageId = message.id;
     messagesEl.appendChild(fragment);
   });
+
+  scrollMessagesToBottom();
+}
+
+function scrollMessagesToBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function renderTasks() {
@@ -243,6 +274,7 @@ function addUser() {
   if (!name) {
     return;
   }
+
   if (state.users.some((user) => user.toLowerCase() === name.toLowerCase())) {
     window.alert("That user already exists.");
     return;
@@ -251,6 +283,54 @@ function addUser() {
   state.users.push(name);
   saveState();
   renderUserList();
+}
+
+function addChannel() {
+  const channelName = window.prompt("Enter channel name:")?.trim();
+  if (!channelName) {
+    return;
+  }
+
+  if (
+    state.channels.some(
+      (channel) => channel.toLowerCase() === channelName.toLowerCase()
+    )
+  ) {
+    window.alert("That channel already exists.");
+    return;
+  }
+
+  state.channels.push(channelName);
+  state.activeConversation = { type: "channel", id: channelName };
+  saveState();
+  renderNav();
+  renderMessages();
+}
+
+function deleteChannel(channelName) {
+  if (state.channels.length === 1) {
+    window.alert("You need to keep at least one channel.");
+    return;
+  }
+
+  const confirmed = window.confirm(`Delete #${channelName}?`);
+  if (!confirmed) {
+    return;
+  }
+
+  state.channels = state.channels.filter((channel) => channel !== channelName);
+  delete state.messages[`channel:${channelName}`];
+
+  if (
+    state.activeConversation.type === "channel" &&
+    state.activeConversation.id === channelName
+  ) {
+    state.activeConversation = { type: "channel", id: state.channels[0] };
+  }
+
+  saveState();
+  renderNav();
+  renderMessages();
 }
 
 function deleteMessage(messageId) {
@@ -269,9 +349,11 @@ function addReaction(conversationKeyName, messageId, emoji) {
   if (!message) {
     return;
   }
+
   if (!message.reactions) {
     message.reactions = {};
   }
+
   message.reactions[emoji] = (message.reactions[emoji] || 0) + 1;
   saveState();
   renderMessages();
@@ -306,8 +388,20 @@ function ensureValidConversation() {
     return;
   }
 
+  if (
+    state.activeConversation.type === "channel" &&
+    !state.channels.includes(state.activeConversation.id)
+  ) {
+    state.activeConversation = { type: "channel", id: state.channels[0] };
+    return;
+  }
+
   if (state.activeConversation.type === "dm") {
-    if (!state.users.includes(state.activeConversation.id) || state.activeConversation.id === state.currentUser) {
+    const invalidDm =
+      !state.users.includes(state.activeConversation.id) ||
+      state.activeConversation.id === state.currentUser;
+
+    if (invalidDm) {
       const fallbackDm = state.users.find((user) => user !== state.currentUser);
       if (fallbackDm) {
         state.activeConversation = { type: "dm", id: fallbackDm };
@@ -346,14 +440,24 @@ function loadState() {
     if (!raw) {
       return structuredClone(defaultState);
     }
+
     const parsed = JSON.parse(raw);
     return {
       ...structuredClone(defaultState),
       ...parsed,
-      activeConversation: parsed.activeConversation || structuredClone(defaultState.activeConversation),
+      users:
+        Array.isArray(parsed.users) && parsed.users.length
+          ? parsed.users
+          : [...defaultState.users],
+      channels:
+        Array.isArray(parsed.channels) && parsed.channels.length
+          ? parsed.channels
+          : [...defaultState.channels],
+      activeConversation:
+        parsed.activeConversation ||
+        structuredClone(defaultState.activeConversation),
       messages: parsed.messages || {},
       tasks: parsed.tasks || [],
-      users: Array.isArray(parsed.users) && parsed.users.length ? parsed.users : [...defaultState.users],
     };
   } catch {
     return structuredClone(defaultState);
